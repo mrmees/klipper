@@ -462,21 +462,28 @@ If it works for X axis, run for Y axis as well:
 ```
 TEST_RESONANCES AXIS=Y
 ```
-This will generate 2 CSV files (`/tmp/resonances_x_*.csv` and
-`/tmp/resonances_y_*.csv`). These files can be processed with the stand-alone
-script on a Raspberry Pi. This script is intended to be run with a single CSV
-file for each axis measured, although it can be used with multiple CSV files
-if you desire to average the results. Averaging results can be useful, for
-example, if resonance tests were done at multiple test points. Delete the extra
-CSV files if you do not desire to average them.
+This will generate 2 CSV files (`resonances_x_*.csv` and
+`resonances_y_*.csv` in the same directory as the main printer config file).
+These files can be processed with the stand-alone script on a Raspberry Pi.
+This script is intended to be run with a single CSV file for each axis
+measured, although it can be used with multiple CSV files if you desire to
+average the results. Averaging results can be useful, for example, if resonance
+tests were done at multiple test points. Delete the extra CSV files if you do
+not desire to average them. If you want to store these files in another
+directory, specify it with `OUTPUT_DIR`. Relative paths are resolved against
+the directory containing the main printer config file and must stay within
+that directory. For example,
+`TEST_RESONANCES AXIS=X OUTPUT_DIR=/home/pi/printer_data/config/resonances`.
+The specified directory will be created if needed and must be writable.
 ```
-~/klipper/scripts/calibrate_shaper.py /tmp/resonances_x_*.csv -o /tmp/shaper_calibrate_x.png
-~/klipper/scripts/calibrate_shaper.py /tmp/resonances_y_*.csv -o /tmp/shaper_calibrate_y.png
+~/klipper/scripts/calibrate_shaper.py ~/printer_data/config/resonances_x_*.csv -o ~/printer_data/config/shaper_calibrate_x.png
+~/klipper/scripts/calibrate_shaper.py ~/printer_data/config/resonances_y_*.csv -o ~/printer_data/config/shaper_calibrate_y.png
 ```
-This script will generate the charts `/tmp/shaper_calibrate_x.png` and
-`/tmp/shaper_calibrate_y.png` with frequency responses. You will also get the
-suggested frequencies for each input shaper, as well as which input shaper is
-recommended for your setup. For example:
+This script will generate the charts
+`~/printer_data/config/shaper_calibrate_x.png` and
+`~/printer_data/config/shaper_calibrate_y.png` with frequency responses. You
+will also get the suggested frequencies for each input shaper, as well as
+which input shaper is recommended for your setup. For example:
 
 ![Resonances](img/calibrate-y.png)
 ```
@@ -608,7 +615,7 @@ In the example above the suggested shaper parameters are not bad, but what if
 you want to get less smoothing on the X axis? You can try to limit the maximum
 shaper smoothing using the following command:
 ```
-~/klipper/scripts/calibrate_shaper.py /tmp/resonances_x_*.csv -o /tmp/shaper_calibrate_x.png --max_smoothing=0.2
+~/klipper/scripts/calibrate_shaper.py ~/printer_data/config/resonances_x_*.csv -o ~/printer_data/config/shaper_calibrate_x.png --max_smoothing=0.2
 ```
 which limits the smoothing to 0.2 score. Now you can get the following result:
 
@@ -686,7 +693,7 @@ it from its default value 5.0, and this is the value used by default by the
 `calibrate_shaper.py` script. If you did change it though, you should inform
 the script about it by passing `--square_corner_velocity=...` parameter, e.g.
 ```
-~/klipper/scripts/calibrate_shaper.py /tmp/resonances_x_*.csv -o /tmp/shaper_calibrate_x.png --square_corner_velocity=10.0
+~/klipper/scripts/calibrate_shaper.py ~/printer_data/config/resonances_x_*.csv -o ~/printer_data/config/shaper_calibrate_x.png --square_corner_velocity=10.0
 ```
 so that it can calculate the maximum acceleration recommendations correctly.
 Note that the `SHAPER_CALIBRATE` command already takes the configured
@@ -817,9 +824,10 @@ TEST_RESONANCES AXIS=1,-1 OUTPUT=raw_data
 ```
 and use `graph_accelerometer.py` to process the generated files, e.g.
 ```
-~/klipper/scripts/graph_accelerometer.py -c /tmp/raw_data_axis*.csv -o /tmp/resonances.png
+~/klipper/scripts/graph_accelerometer.py -c ~/printer_data/config/raw_data_axis*.csv -o ~/printer_data/config/resonances.png
 ```
-which will generate `/tmp/resonances.png` comparing the resonances.
+which will generate `~/printer_data/config/resonances.png` comparing the
+resonances.
 
 For Delta printers with the default tower placement
 (tower A ~= 210 degrees, B ~= 330 degrees, and C ~= 90 degrees), execute
@@ -830,9 +838,9 @@ TEST_RESONANCES AXIS=0.866025404,-0.5 OUTPUT=raw_data
 ```
 and then use the same command
 ```
-~/klipper/scripts/graph_accelerometer.py -c /tmp/raw_data_axis*.csv -o /tmp/resonances.png
+~/klipper/scripts/graph_accelerometer.py -c ~/printer_data/config/raw_data_axis*.csv -o ~/printer_data/config/resonances.png
 ```
-to generate `/tmp/resonances.png` comparing the resonances.
+to generate `~/printer_data/config/resonances.png` comparing the resonances.
 
 ## Input Shaper auto-calibration
 
@@ -844,10 +852,14 @@ SHAPER_CALIBRATE
 ```
 
 This will run the full test for both axes and generate the csv output
-(`/tmp/calibration_data_*.csv` by default) for the frequency response
-and the suggested input shapers. You will also get the suggested
-frequencies for each input shaper, as well as which input shaper is
-recommended for your setup, on Octoprint console. For example:
+(`calibration_data_*.csv` in the same directory as the main printer config
+file by default) for the frequency response and the suggested input shapers.
+Use the `OUTPUT_DIR` parameter to write these files to another directory,
+which will be created if needed and must be writable. Relative paths are
+resolved against the directory containing the main printer config file and must
+stay within that directory. You will also get the suggested frequencies for each
+input shaper, as well as which input shaper is recommended for your setup, on
+Octoprint console. For example:
 
 ```
 Calculating the best input shaper parameters for y axis
@@ -952,10 +964,11 @@ and not resonances\*.csv or calibration_data\*.csv files.
 
 For example,
 ```
-~/klipper/scripts/graph_accelerometer.py /tmp/raw_data_x_*.csv -o /tmp/resonances_x.png -c -a z
+~/klipper/scripts/graph_accelerometer.py ~/printer_data/config/raw_data_x_*.csv -o ~/printer_data/config/resonances_x.png -c -a z
 ```
-will plot the comparison of several `/tmp/raw_data_x_*.csv` files for Z axis to
-`/tmp/resonances_x.png` file.
+will plot the comparison of several
+`~/printer_data/config/raw_data_x_*.csv` files for Z axis to
+`~/printer_data/config/resonances_x.png` file.
 
 The shaper_calibrate.py script accepts 1 or several inputs and can run automatic
 tuning of the input shaper and suggest the best parameters that work well for

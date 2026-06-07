@@ -3,7 +3,7 @@
 # Copyright (C) 2020-2025  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import itertools, logging, math, os, time
+import itertools, logging, math, os, tempfile, time
 from . import shaper_calibrate
 
 class TestAxis:
@@ -308,7 +308,7 @@ class ResonanceTester:
             self.accel_chips.append((chip_axis, chip))
 
     def _run_test(self, gcmd, axes, helper, name_suffix, raw_name_suffix=None,
-                  accel_chips=None, test_point=None):
+                  accel_chips=None, test_point=None, output_dir=None):
         toolhead = self.printer.lookup_object('toolhead')
         calibration_data = {axis: None for axis in axes}
 
@@ -355,7 +355,8 @@ class ResonanceTester:
                                 'raw_data', raw_name_suffix, axis,
                                 point if len(test_points) > 1 else None,
                                 chip_name if (accel_chips is not None
-                                              or len(raw_values) > 1) else None)
+                                              or len(raw_values) > 1) else None,
+                                output_dir)
                         aclient.write_to_file(raw_name)
                         gcmd.respond_info(
                                 "Writing raw accelerometer data to "
@@ -371,7 +372,8 @@ class ResonanceTester:
                             'resonances', name_suffix, axis,
                             point if len(test_points) > 1 else None,
                             chip_name if (accel_chips is not None
-                                          or len(raw_values) > 1) else None)
+                                          or len(raw_values) > 1) else None,
+                            output_dir)
                     new_data = helper.process_accelerometer_data(name, aclient)
                     if calibration_data[axis] is None:
                         calibration_data[axis] = new_data
@@ -390,6 +392,42 @@ class ResonanceTester:
                         "'%s' is not an accelerometer" % chip_name)
             parsed_chips.append(chip)
         return parsed_chips
+    def _parse_output_dir(self, gcmd):
+        raw_output_dir = gcmd.get("OUTPUT_DIR", None)
+        output_dir = self._get_output_dir(raw_output_dir)
+        if (raw_output_dir is not None and not os.path.isabs(raw_output_dir)
+            and not self._is_path_within_config_dir(output_dir)):
+            raise gcmd.error("Invalid OUTPUT_DIR parameter: relative path"
+                             " must stay within the config directory")
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as e:
+            raise gcmd.error("Unable to create OUTPUT_DIR '%s': %s"
+                             % (output_dir, str(e)))
+        if not os.path.isdir(output_dir):
+            raise gcmd.error("Invalid OUTPUT_DIR parameter: '%s' is not a"
+                             " directory" % (output_dir,))
+        try:
+            with tempfile.TemporaryFile(dir=output_dir):
+                pass
+        except OSError as e:
+            raise gcmd.error("Unable to write to OUTPUT_DIR '%s': %s"
+                             % (output_dir, str(e)))
+        return output_dir
+    def _get_default_output_dir(self):
+        config_file = self.printer.get_start_args()['config_file']
+        return os.path.dirname(os.path.abspath(config_file))
+    def _get_output_dir(self, output_dir=None):
+        default_dir = self._get_default_output_dir()
+        if output_dir is None:
+            return default_dir
+        if not os.path.isabs(output_dir):
+            return os.path.join(default_dir, output_dir)
+        return output_dir
+    def _is_path_within_config_dir(self, output_dir):
+        default_dir = os.path.realpath(self._get_default_output_dir())
+        output_dir = os.path.realpath(output_dir)
+        return os.path.commonpath([default_dir, output_dir]) == default_dir
     def _get_max_calibration_freq(self):
         return 1.5 * self.generator.get_max_freq()
     cmd_TEST_RESONANCES_help = ("Runs the resonance test for a specified axis")
@@ -422,6 +460,7 @@ class ResonanceTester:
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
             raise gcmd.error("Invalid NAME parameter")
+        output_dir = self._parse_output_dir(gcmd)
         csv_output = 'resonances' in outputs
         raw_output = 'raw_data' in outputs
 
@@ -434,11 +473,13 @@ class ResonanceTester:
         data = self._run_test(
                 gcmd, [axis], helper, name_suffix,
                 raw_name_suffix=name_suffix if raw_output else None,
-                accel_chips=accel_chips, test_point=test_point)[axis]
+                accel_chips=accel_chips, test_point=test_point,
+                output_dir=output_dir)[axis]
         if csv_output:
             csv_name = self.save_calibration_data(
                     'resonances', name_suffix, helper, axis, data,
-                    point=test_point, max_freq=self._get_max_calibration_freq())
+                    point=test_point, max_freq=self._get_max_calibration_freq(),
+                    output_dir=output_dir)
             gcmd.respond_info(
                     "Resonances data written to %s file" % (csv_name,))
     cmd_SHAPER_CALIBRATE_help = (
@@ -461,6 +502,7 @@ class ResonanceTester:
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
             raise gcmd.error("Invalid NAME parameter")
+        output_dir = self._parse_output_dir(gcmd)
 
         input_shaper = self.printer.lookup_object('input_shaper', None)
 
@@ -468,7 +510,8 @@ class ResonanceTester:
         helper = shaper_calibrate.ShaperCalibrate(self.printer)
 
         calibration_data = self._run_test(gcmd, calibrate_axes, helper,
-                                          name_suffix, accel_chips=accel_chips)
+                                          name_suffix, accel_chips=accel_chips,
+                                          output_dir=output_dir)
 
         configfile = self.printer.lookup_object('configfile')
         for axis in calibrate_axes:
@@ -496,7 +539,8 @@ class ResonanceTester:
                                best_shaper.name, best_shaper.freq)
             csv_name = self.save_calibration_data(
                     'calibration_data', name_suffix, helper, axis,
-                    calibration_data[axis], all_shapers, max_freq=max_freq)
+                    calibration_data[axis], all_shapers, max_freq=max_freq,
+                    output_dir=output_dir)
             gcmd.respond_info(
                     "Shaper calibration data written to %s file" % (csv_name,))
         gcmd.respond_info(
@@ -529,7 +573,7 @@ class ResonanceTester:
         return name_suffix.replace('-', '').replace('_', '').isalnum()
 
     def get_filename(self, base, name_suffix, axis=None,
-                     point=None, chip_name=None):
+                     point=None, chip_name=None, output_dir=None):
         name = base
         if axis:
             name += '_' + axis.get_name()
@@ -538,12 +582,15 @@ class ResonanceTester:
         if point:
             name += "_%.3f_%.3f_%.3f" % (point[0], point[1], point[2])
         name += '_' + name_suffix
-        return os.path.join("/tmp", name + ".csv")
+        output_dir = self._get_output_dir(output_dir)
+        return os.path.join(output_dir, name + ".csv")
 
     def save_calibration_data(self, base_name, name_suffix, shaper_calibrate,
                               axis, calibration_data,
-                              all_shapers=None, point=None, max_freq=None):
-        output = self.get_filename(base_name, name_suffix, axis, point)
+                              all_shapers=None, point=None, max_freq=None,
+                              output_dir=None):
+        output = self.get_filename(base_name, name_suffix, axis, point,
+                                   output_dir=output_dir)
         shaper_calibrate.save_calibration_data(output, calibration_data,
                                                all_shapers, max_freq)
         return output

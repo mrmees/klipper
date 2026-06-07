@@ -462,21 +462,21 @@ If it works for X axis, run for Y axis as well:
 ```
 TEST_RESONANCES AXIS=Y
 ```
-This will generate 2 CSV files (`/tmp/resonances_x_*.csv` and
-`/tmp/resonances_y_*.csv`). These files can be processed with the stand-alone
-script on a Raspberry Pi. This script is intended to be run with a single CSV
-file for each axis measured, although it can be used with multiple CSV files
-if you desire to average the results. Averaging results can be useful, for
-example, if resonance tests were done at multiple test points. Delete the extra
-CSV files if you do not desire to average them.
+This stores the processed frequency responses as API results. Use the
+`resonance_tester/list_results` and `resonance_tester/get_result` API
+endpoints to retrieve the generated CSV data. An external API client may save
+that CSV data to files and process them with the stand-alone script on a
+Raspberry Pi. This script is intended to be run with a single CSV file for
+each axis measured, although it can be used with multiple CSV files if you
+desire to average the results. Averaging results can be useful, for example,
+if resonance tests were done at multiple test points.
 ```
-~/klipper/scripts/calibrate_shaper.py /tmp/resonances_x_*.csv -o /tmp/shaper_calibrate_x.png
-~/klipper/scripts/calibrate_shaper.py /tmp/resonances_y_*.csv -o /tmp/shaper_calibrate_y.png
+~/klipper/scripts/calibrate_shaper.py resonances_x_*.csv -o shaper_calibrate_x.png
+~/klipper/scripts/calibrate_shaper.py resonances_y_*.csv -o shaper_calibrate_y.png
 ```
-This script will generate the charts `/tmp/shaper_calibrate_x.png` and
-`/tmp/shaper_calibrate_y.png` with frequency responses. You will also get the
-suggested frequencies for each input shaper, as well as which input shaper is
-recommended for your setup. For example:
+This script will generate charts with frequency responses. You will also get
+the suggested frequencies for each input shaper, as well as which input shaper
+is recommended for your setup. For example:
 
 ![Resonances](img/calibrate-y.png)
 ```
@@ -608,7 +608,7 @@ In the example above the suggested shaper parameters are not bad, but what if
 you want to get less smoothing on the X axis? You can try to limit the maximum
 shaper smoothing using the following command:
 ```
-~/klipper/scripts/calibrate_shaper.py /tmp/resonances_x_*.csv -o /tmp/shaper_calibrate_x.png --max_smoothing=0.2
+~/klipper/scripts/calibrate_shaper.py resonances_x_*.csv -o shaper_calibrate_x.png --max_smoothing=0.2
 ```
 which limits the smoothing to 0.2 score. Now you can get the following result:
 
@@ -686,7 +686,7 @@ it from its default value 5.0, and this is the value used by default by the
 `calibrate_shaper.py` script. If you did change it though, you should inform
 the script about it by passing `--square_corner_velocity=...` parameter, e.g.
 ```
-~/klipper/scripts/calibrate_shaper.py /tmp/resonances_x_*.csv -o /tmp/shaper_calibrate_x.png --square_corner_velocity=10.0
+~/klipper/scripts/calibrate_shaper.py resonances_x_*.csv -o shaper_calibrate_x.png --square_corner_velocity=10.0
 ```
 so that it can calculate the maximum acceleration recommendations correctly.
 Note that the `SHAPER_CALIBRATE` command already takes the configured
@@ -815,11 +815,13 @@ To check the belt tension on CoreXY printers, execute
 TEST_RESONANCES AXIS=1,1 OUTPUT=raw_data
 TEST_RESONANCES AXIS=1,-1 OUTPUT=raw_data
 ```
-and use `graph_accelerometer.py` to process the generated files, e.g.
+with an API client subscribed to `resonance_tester/subscribe_raw_data`. The
+client may save the streamed data to CSV files and use `graph_accelerometer.py`
+to process them, e.g.
 ```
-~/klipper/scripts/graph_accelerometer.py -c /tmp/raw_data_axis*.csv -o /tmp/resonances.png
+~/klipper/scripts/graph_accelerometer.py -c raw_data_axis*.csv -o resonances.png
 ```
-which will generate `/tmp/resonances.png` comparing the resonances.
+which will generate `resonances.png` comparing the resonances.
 
 For Delta printers with the default tower placement
 (tower A ~= 210 degrees, B ~= 330 degrees, and C ~= 90 degrees), execute
@@ -830,9 +832,9 @@ TEST_RESONANCES AXIS=0.866025404,-0.5 OUTPUT=raw_data
 ```
 and then use the same command
 ```
-~/klipper/scripts/graph_accelerometer.py -c /tmp/raw_data_axis*.csv -o /tmp/resonances.png
+~/klipper/scripts/graph_accelerometer.py -c raw_data_axis*.csv -o resonances.png
 ```
-to generate `/tmp/resonances.png` comparing the resonances.
+to generate `resonances.png` comparing the resonances.
 
 ## Input Shaper auto-calibration
 
@@ -843,11 +845,12 @@ directly from Klipper. Run the following command via Octoprint terminal:
 SHAPER_CALIBRATE
 ```
 
-This will run the full test for both axes and generate the csv output
-(`/tmp/calibration_data_*.csv` by default) for the frequency response
-and the suggested input shapers. You will also get the suggested
-frequencies for each input shaper, as well as which input shaper is
-recommended for your setup, on Octoprint console. For example:
+This will run the full test for both axes and store CSV output for the
+frequency response and the suggested input shapers as API results. Use the
+`resonance_tester/list_results` and `resonance_tester/get_result` API endpoints
+to retrieve the generated CSV data. You will also get the suggested frequencies
+for each input shaper, as well as which input shaper is recommended for your
+setup, on Octoprint console. For example:
 
 ```
 Calculating the best input shaper parameters for y axis
@@ -952,10 +955,10 @@ and not resonances\*.csv or calibration_data\*.csv files.
 
 For example,
 ```
-~/klipper/scripts/graph_accelerometer.py /tmp/raw_data_x_*.csv -o /tmp/resonances_x.png -c -a z
+~/klipper/scripts/graph_accelerometer.py raw_data_x_*.csv -o resonances_x.png -c -a z
 ```
-will plot the comparison of several `/tmp/raw_data_x_*.csv` files for Z axis to
-`/tmp/resonances_x.png` file.
+will plot the comparison of several `raw_data_x_*.csv` files for Z axis to
+`resonances_x.png` file.
 
 The shaper_calibrate.py script accepts 1 or several inputs and can run automatic
 tuning of the input shaper and suggest the best parameters that work well for

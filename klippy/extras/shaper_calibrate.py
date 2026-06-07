@@ -3,7 +3,7 @@
 # Copyright (C) 2020-2024  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import collections, importlib, logging, math, multiprocessing, traceback
+import collections, importlib, io, logging, math, multiprocessing, traceback
 shaper_defs = importlib.import_module('.shaper_defs', 'extras')
 
 MIN_FREQ = 5.
@@ -442,52 +442,64 @@ class ShaperCalibrate:
             return '"' + name + '"'
         return name
 
+    def _write_calibration_data(self, csvfile, calibration_data, shapers=None,
+                                max_freq=None):
+        np = calibration_data.numpy
+        datasets = calibration_data.get_datasets()
+        max_freq = max_freq or MAX_FREQ
+        if len(datasets) > 1:
+            if shapers:
+                freq_bins = shapers[0].freq_bins
+            else:
+                min_freq = max_freq
+                for data in datasets:
+                    min_freq = min(min_freq, data.freq_bins.min())
+                freq_bins = np.arange(min_freq, max_freq, 0.2)
+            psd_data_to_write = []
+            for data in datasets:
+                psd_data_to_write.append(np.interp(
+                    freq_bins, data.freq_bins, data.psd_sum))
+        else:
+            freq_bins = calibration_data.freq_bins
+            psd_data_to_write = [
+                    calibration_data.psd_x, calibration_data.psd_y,
+                    calibration_data.psd_z, calibration_data.psd_sum]
+        csvfile.write("freq,")
+        if len(datasets) > 1:
+            csvfile.write(','.join([self._escape_for_csv(d.name)
+                                    for d in datasets]))
+        else:
+            csvfile.write("psd_x,psd_y,psd_z,psd_xyz")
+        if shapers:
+            csvfile.write(',shapers:')
+            for shaper in shapers:
+                csvfile.write(",%s(%.1f)" % (shaper.name, shaper.freq))
+        csvfile.write("\n")
+        num_freqs = freq_bins.shape[0]
+        for i in range(num_freqs):
+            if freq_bins[i] >= max_freq:
+                break
+            csvfile.write("%.1f" % freq_bins[i])
+            for psd in psd_data_to_write:
+                csvfile.write(",%.3e" % psd[i])
+            if shapers:
+                csvfile.write(',')
+                for shaper in shapers:
+                    csvfile.write(",%.3f" % (shaper.vals[i],))
+            csvfile.write("\n")
+
+    def write_calibration_data(self, calibration_data, shapers=None,
+                               max_freq=None):
+        csvfile = io.StringIO()
+        self._write_calibration_data(
+            csvfile, calibration_data, shapers, max_freq)
+        return csvfile.getvalue()
+
     def save_calibration_data(self, output, calibration_data, shapers=None,
                               max_freq=None):
         try:
-            np = calibration_data.numpy
-            datasets = calibration_data.get_datasets()
-            max_freq = max_freq or MAX_FREQ
-            if len(datasets) > 1:
-                if shapers:
-                    freq_bins = shapers[0].freq_bins
-                else:
-                    min_freq = max_freq
-                    for data in datasets:
-                        min_freq = min(min_freq, data.freq_bins.min())
-                    freq_bins = np.arange(min_freq, max_freq, 0.2)
-                psd_data_to_write = []
-                for data in datasets:
-                    psd_data_to_write.append(np.interp(
-                        freq_bins, data.freq_bins, data.psd_sum))
-            else:
-                freq_bins = calibration_data.freq_bins
-                psd_data_to_write = [
-                        calibration_data.psd_x, calibration_data.psd_y,
-                        calibration_data.psd_z, calibration_data.psd_sum]
             with open(output, "w") as csvfile:
-                csvfile.write("freq,")
-                if len(datasets) > 1:
-                    csvfile.write(','.join([self._escape_for_csv(d.name)
-                                            for d in datasets]))
-                else:
-                    csvfile.write("psd_x,psd_y,psd_z,psd_xyz")
-                if shapers:
-                    csvfile.write(',shapers:')
-                    for shaper in shapers:
-                        csvfile.write(",%s(%.1f)" % (shaper.name, shaper.freq))
-                csvfile.write("\n")
-                num_freqs = freq_bins.shape[0]
-                for i in range(num_freqs):
-                    if freq_bins[i] >= max_freq:
-                        break
-                    csvfile.write("%.1f" % freq_bins[i])
-                    for psd in psd_data_to_write:
-                        csvfile.write(",%.3e" % psd[i])
-                    if shapers:
-                        csvfile.write(',')
-                        for shaper in shapers:
-                            csvfile.write(",%.3f" % (shaper.vals[i],))
-                    csvfile.write("\n")
+                self._write_calibration_data(
+                    csvfile, calibration_data, shapers, max_freq)
         except IOError as e:
             raise self.error("Error writing to file '%s': %s", output, str(e))

@@ -3,8 +3,12 @@
 # Copyright (C) 2020-2025  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import itertools, logging, math, os, time
+import collections, itertools, logging, math, time
 from . import shaper_calibrate
+
+RAW_DATA_HEADER = (
+        'time', 'x_acceleration', 'y_acceleration', 'z_acceleration')
+MAX_STORED_RESULTS = 10
 
 class TestAxis:
     def __init__(self, axis=None, vib_dir=None):
@@ -283,6 +287,10 @@ class ResonanceTester:
         self.max_smoothing = config.getfloat('max_smoothing', None, minval=0.05)
         self.probe_points = config.getlists('probe_points', seps=(',', '\n'),
                                             parser=float, count=3)
+        self.raw_data_clients = {}
+        self.results = collections.OrderedDict()
+        self.next_run_id = 1
+        self.next_result_id = 1
 
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command("MEASURE_AXES_NOISE",
@@ -294,6 +302,16 @@ class ResonanceTester:
         self.gcode.register_command("SHAPER_CALIBRATE",
                                     self.cmd_SHAPER_CALIBRATE,
                                     desc=self.cmd_SHAPER_CALIBRATE_help)
+        webhooks = self.printer.lookup_object('webhooks')
+        webhooks.register_endpoint(
+                "resonance_tester/list_results", self._handle_list_results)
+        webhooks.register_endpoint(
+                "resonance_tester/get_result", self._handle_get_result)
+        webhooks.register_endpoint(
+                "resonance_tester/clear_results", self._handle_clear_results)
+        webhooks.register_endpoint(
+                "resonance_tester/subscribe_raw_data",
+                self._handle_subscribe_raw_data)
         self.printer.register_event_handler("klippy:connect", self.connect)
 
     def connect(self):
@@ -307,8 +325,102 @@ class ResonanceTester:
                         "'%s' is not an accelerometer" % chip_name)
             self.accel_chips.append((chip_axis, chip))
 
-    def _run_test(self, gcmd, axes, helper, name_suffix, raw_name_suffix=None,
-                  accel_chips=None, test_point=None):
+    def _allocate_run_id(self, name_suffix):
+        run_id = "%s-%06d" % (name_suffix, self.next_run_id)
+        self.next_run_id += 1
+        return run_id
+
+    def _handle_subscribe_raw_data(self, web_request):
+        cconn = web_request.get_client_connection()
+        template = web_request.get_dict('response_template', {})
+        self.raw_data_clients[cconn] = template
+        web_request.send({'header': RAW_DATA_HEADER})
+
+    def _prune_raw_data_clients(self):
+        for cconn in list(self.raw_data_clients.keys()):
+            if cconn.is_closed():
+                del self.raw_data_clients[cconn]
+
+    def _has_raw_data_clients(self):
+        self._prune_raw_data_clients()
+        return bool(self.raw_data_clients)
+
+    def _publish_raw_data(self, run_id, axis_name, point, chip_name, msg):
+        self._prune_raw_data_clients()
+        if not self.raw_data_clients:
+            return
+        params = {
+                'run_id': run_id,
+                'axis': axis_name,
+                'point': list(point) if point is not None else None,
+                'chip_name': chip_name,
+                'data': msg.get('data', [])}
+        for field in ('errors', 'overflows'):
+            if field in msg:
+                params[field] = msg[field]
+        for cconn, template in list(self.raw_data_clients.items()):
+            tmp = dict(template)
+            tmp['params'] = params
+            cconn.send(tmp)
+
+    def _make_raw_data_callback(self, run_id, axis, point, chip_name):
+        axis_name = axis.get_name()
+        return lambda msg: self._publish_raw_data(
+                run_id, axis_name, point, chip_name, msg)
+
+    def _store_result(self, run_id, base_name, name_suffix, axis,
+                      csv_data, point=None, all_shapers=None):
+        result_id = "%06d" % (self.next_result_id,)
+        self.next_result_id += 1
+        metadata = {
+                'id': result_id,
+                'run_id': run_id,
+                'type': base_name,
+                'name': self.get_data_name(base_name, name_suffix, axis,
+                                           point),
+                'filename': self.get_data_filename(base_name, name_suffix,
+                                                   axis, point),
+                'axis': axis.get_name(),
+                'point': list(point) if point is not None else None,
+                'content_type': 'text/csv',
+                'created': time.time()}
+        if all_shapers:
+            metadata['shapers'] = [
+                    {'name': s.name, 'frequency': s.freq}
+                    for s in all_shapers]
+        result = dict(metadata)
+        result['data'] = csv_data
+        self.results[result_id] = result
+        while len(self.results) > MAX_STORED_RESULTS:
+            self.results.popitem(last=False)
+        return result_id
+
+    def _handle_list_results(self, web_request):
+        results = []
+        for result in self.results.values():
+            metadata = dict(result)
+            del metadata['data']
+            results.append(metadata)
+        web_request.send({'results': results})
+
+    def _handle_get_result(self, web_request):
+        result_id = web_request.get_str('id')
+        result = self.results.get(result_id)
+        if result is None:
+            raise web_request.error(
+                    "Unknown resonance result '%s'" % (result_id,))
+        web_request.send(dict(result))
+
+    def _handle_clear_results(self, web_request):
+        result_id = web_request.get_str('id', None)
+        if result_id is None:
+            self.results.clear()
+        else:
+            self.results.pop(result_id, None)
+        web_request.send({})
+
+    def _run_test(self, gcmd, axes, helper, name_suffix, raw_output=False,
+                  accel_chips=None, test_point=None, run_id=None):
         toolhead = self.printer.lookup_object('toolhead')
         calibration_data = {axis: None for axis in axes}
 
@@ -331,14 +443,25 @@ class ResonanceTester:
                     gcmd.respond_info("Testing axis %s" % axis.get_name())
 
                 raw_values = []
+                store_samples = helper is not None
                 if accel_chips is None:
                     for chip_axis, chip in self.accel_chips:
                         if axis.matches(chip_axis):
-                            aclient = chip.start_internal_client()
+                            raw_cb = None
+                            if raw_output:
+                                raw_cb = self._make_raw_data_callback(
+                                        run_id, axis, point, chip.name)
+                            aclient = chip.start_internal_client(
+                                    raw_cb, store_samples)
                             raw_values.append((chip_axis, aclient, chip.name))
                 else:
                     for chip in accel_chips:
-                        aclient = chip.start_internal_client()
+                        raw_cb = None
+                        if raw_output:
+                            raw_cb = self._make_raw_data_callback(
+                                    run_id, axis, point, chip.name)
+                        aclient = chip.start_internal_client(
+                                raw_cb, store_samples)
                         raw_values.append((axis, aclient, chip.name))
                 if not raw_values:
                     raise gcmd.error(
@@ -350,16 +473,6 @@ class ResonanceTester:
                 self.executor.run_test(test_seq, axis, gcmd)
                 for chip_axis, aclient, chip_name in raw_values:
                     aclient.finish_measurements()
-                    if raw_name_suffix is not None:
-                        raw_name = self.get_filename(
-                                'raw_data', raw_name_suffix, axis,
-                                point if len(test_points) > 1 else None,
-                                chip_name if (accel_chips is not None
-                                              or len(raw_values) > 1) else None)
-                        aclient.write_to_file(raw_name)
-                        gcmd.respond_info(
-                                "Writing raw accelerometer data to "
-                                "%s file" % (raw_name,))
                 if helper is None:
                     continue
                 for chip_axis, aclient, chip_name in raw_values:
@@ -367,7 +480,7 @@ class ResonanceTester:
                         raise gcmd.error(
                             "accelerometer '%s' measured no data" % (
                                 chip_name,))
-                    name = self.get_filename(
+                    name = self.get_data_name(
                             'resonances', name_suffix, axis,
                             point if len(test_points) > 1 else None,
                             chip_name if (accel_chips is not None
@@ -422,8 +535,19 @@ class ResonanceTester:
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
             raise gcmd.error("Invalid NAME parameter")
+        run_id = self._allocate_run_id(name_suffix)
         csv_output = 'resonances' in outputs
         raw_output = 'raw_data' in outputs
+        if raw_output:
+            if self._has_raw_data_clients():
+                gcmd.respond_info(
+                        "Raw accelerometer data will be streamed via "
+                        "resonance_tester/subscribe_raw_data")
+            else:
+                gcmd.respond_info(
+                        "No API clients subscribed to "
+                        "resonance_tester/subscribe_raw_data; raw data will "
+                        "not be retained")
 
         # Setup calculation of resonances
         if csv_output:
@@ -432,15 +556,16 @@ class ResonanceTester:
             helper = None
 
         data = self._run_test(
-                gcmd, [axis], helper, name_suffix,
-                raw_name_suffix=name_suffix if raw_output else None,
-                accel_chips=accel_chips, test_point=test_point)[axis]
+                gcmd, [axis], helper, name_suffix, raw_output=raw_output,
+                accel_chips=accel_chips, test_point=test_point,
+                run_id=run_id)[axis]
         if csv_output:
-            csv_name = self.save_calibration_data(
+            result_id = self.save_calibration_data(
                     'resonances', name_suffix, helper, axis, data,
-                    point=test_point, max_freq=self._get_max_calibration_freq())
+                    point=test_point, max_freq=self._get_max_calibration_freq(),
+                    run_id=run_id)
             gcmd.respond_info(
-                    "Resonances data written to %s file" % (csv_name,))
+                    "Resonances data stored as API result %s" % (result_id,))
     cmd_SHAPER_CALIBRATE_help = (
         "Similar to TEST_RESONANCES but suggest input shaper config")
     def cmd_SHAPER_CALIBRATE(self, gcmd):
@@ -461,6 +586,7 @@ class ResonanceTester:
         name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not self.is_valid_name_suffix(name_suffix):
             raise gcmd.error("Invalid NAME parameter")
+        run_id = self._allocate_run_id(name_suffix)
 
         input_shaper = self.printer.lookup_object('input_shaper', None)
 
@@ -468,7 +594,8 @@ class ResonanceTester:
         helper = shaper_calibrate.ShaperCalibrate(self.printer)
 
         calibration_data = self._run_test(gcmd, calibrate_axes, helper,
-                                          name_suffix, accel_chips=accel_chips)
+                                          name_suffix, accel_chips=accel_chips,
+                                          run_id=run_id)
 
         configfile = self.printer.lookup_object('configfile')
         for axis in calibrate_axes:
@@ -494,11 +621,13 @@ class ResonanceTester:
                                     best_shaper.name, best_shaper.freq)
             helper.save_params(configfile, axis_name,
                                best_shaper.name, best_shaper.freq)
-            csv_name = self.save_calibration_data(
+            result_id = self.save_calibration_data(
                     'calibration_data', name_suffix, helper, axis,
-                    calibration_data[axis], all_shapers, max_freq=max_freq)
+                    calibration_data[axis], all_shapers, max_freq=max_freq,
+                    run_id=run_id)
             gcmd.respond_info(
-                    "Shaper calibration data written to %s file" % (csv_name,))
+                    "Shaper calibration data stored as API result %s" % (
+                        result_id,))
         gcmd.respond_info(
             "The SAVE_CONFIG command will update the printer config file\n"
             "with these parameters and restart the printer.")
@@ -528,8 +657,8 @@ class ResonanceTester:
     def is_valid_name_suffix(self, name_suffix):
         return name_suffix.replace('-', '').replace('_', '').isalnum()
 
-    def get_filename(self, base, name_suffix, axis=None,
-                     point=None, chip_name=None):
+    def get_data_name(self, base, name_suffix, axis=None,
+                      point=None, chip_name=None):
         name = base
         if axis:
             name += '_' + axis.get_name()
@@ -538,15 +667,22 @@ class ResonanceTester:
         if point:
             name += "_%.3f_%.3f_%.3f" % (point[0], point[1], point[2])
         name += '_' + name_suffix
-        return os.path.join("/tmp", name + ".csv")
+        return name
+
+    def get_data_filename(self, base, name_suffix, axis=None,
+                          point=None, chip_name=None):
+        return self.get_data_name(
+                base, name_suffix, axis, point, chip_name) + ".csv"
 
     def save_calibration_data(self, base_name, name_suffix, shaper_calibrate,
                               axis, calibration_data,
-                              all_shapers=None, point=None, max_freq=None):
-        output = self.get_filename(base_name, name_suffix, axis, point)
-        shaper_calibrate.save_calibration_data(output, calibration_data,
-                                               all_shapers, max_freq)
-        return output
+                              all_shapers=None, point=None, max_freq=None,
+                              run_id=None):
+        csv_data = shaper_calibrate.write_calibration_data(
+                calibration_data, all_shapers, max_freq)
+        return self._store_result(
+                run_id, base_name, name_suffix, axis, csv_data, point,
+                all_shapers)
 
 def load_config(config):
     return ResonanceTester(config)

@@ -117,8 +117,8 @@ class LIS2DW:
                     "This is generally indicative of connection problems "
                     "(e.g. faulty wiring) or a faulty lis2dw chip." % (
                         reg, val, stored_val))
-    def start_internal_client(self):
-        aqh = adxl345.AccelQueryHelper(self.printer)
+    def start_internal_client(self, batch_cb=None, store_samples=True):
+        aqh = adxl345.AccelQueryHelper(self.printer, batch_cb, store_samples)
         self.batch_bulk.add_client(aqh.handle_batch)
         return aqh
     # Measurement decoding

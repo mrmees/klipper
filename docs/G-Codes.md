@@ -1352,10 +1352,10 @@ all enabled accelerometer chips.
 `TEST_RESONANCES AXIS=<axis> [OUTPUT=<resonances,raw_data>]
 [NAME=<name>] [FREQ_START=<min_freq>] [FREQ_END=<max_freq>]
 [ACCEL_PER_HZ=<accel_per_hz>] [HZ_PER_SEC=<hz_per_sec>] [CHIPS=<chip_name>]
-[POINT=x,y,z] [INPUT_SHAPING=<0:1>]`: Runs the resonance
-test in all configured probe points for the requested "axis" and
-measures the acceleration using the accelerometer chips configured for
-the respective axis. "axis" can either be X, Y or Z, or specify an
+[POINT=x,y,z] [INPUT_SHAPING=<0:1>]`:
+Runs the resonance test in all configured probe points for the requested
+"axis" and measures the acceleration using the accelerometer chips configured
+for the respective axis. "axis" can either be X, Y or Z, or specify an
 arbitrary direction as `AXIS=dx,dy[,dz]`, where dx, dy, dz are floating
 point numbers defining a direction vector (e.g. `AXIS=X`, `AXIS=Y`, or
 `AXIS=1,-1` to define a diagonal direction in XY plane, or `AXIS=0,1,1`
@@ -1367,20 +1367,21 @@ configured in `[resonance_tester]`. If `INPUT_SHAPING=0` or not set(default),
 disables input shaping for the resonance testing, because
 it is not valid to run the resonance testing with the input shaper
 enabled. `OUTPUT` parameter is a comma-separated list of which outputs
-will be written. If `raw_data` is requested, then the raw
-accelerometer data is written into a file or a series of files
-`/tmp/raw_data_<axis>_[<chip_name>_][<point>_]<name>.csv` with
-(`<point>_` part of the name generated only if more than 1 probe point
-is configured or POINT is specified). If `resonances` is specified, the
-frequency response is calculated (across all probe points) and written into
-`/tmp/resonances_<axis>_<name>.csv` file. If unset, OUTPUT defaults to
-`resonances`, and NAME defaults to the current time in
-"YYYYMMDD_HHMMSS" format.
+to produce. If `raw_data` is requested, then raw accelerometer data is
+streamed to clients subscribed to the
+`resonance_tester/subscribe_raw_data` API endpoint. Raw data is not retained
+by Klipper after the test. If `resonances` is specified, the frequency response
+is calculated across all probe points and stored as a short-lived API result
+available from the `resonance_tester/list_results` and
+`resonance_tester/get_result` endpoints. If unset, OUTPUT defaults to
+`resonances`, and NAME defaults to the current time in "YYYYMMDD_HHMMSS"
+format.
 
 #### SHAPER_CALIBRATE
 `SHAPER_CALIBRATE [AXIS=<axis>] [NAME=<name>] [FREQ_START=<min_freq>]
 [FREQ_END=<max_freq>] [ACCEL_PER_HZ=<accel_per_hz>][HZ_PER_SEC=<hz_per_sec>]
-[CHIPS=<chip_name>] [MAX_SMOOTHING=<max_smoothing>] [INPUT_SHAPING=<0:1>]`:
+[CHIPS=<chip_name>] [MAX_SMOOTHING=<max_smoothing>]
+[INPUT_SHAPING=<0:1>]`:
 Similarly to `TEST_RESONANCES`, runs
 the resonance test as configured, and tries to find the optimal
 parameters for the input shaper for the requested axis (or both X and
@@ -1391,8 +1392,9 @@ being unset. See the
 measuring resonances guide for more information on the use of this
 feature. The results of the tuning are printed to the console, and the
 frequency responses and the different input shapers values are written
-to a CSV file(s) `/tmp/calibration_data_<axis>_<name>.csv`. Unless
-specified, NAME defaults to the current time in "YYYYMMDD_HHMMSS"
+to a short-lived API result available from the
+`resonance_tester/list_results` and `resonance_tester/get_result` endpoints.
+Unless specified, NAME defaults to the current time in "YYYYMMDD_HHMMSS"
 format. Note that the suggested input shaper parameters can be
 persisted in the config by issuing `SAVE_CONFIG` command, and if
 `[input_shaper]` was already enabled previously, these parameters

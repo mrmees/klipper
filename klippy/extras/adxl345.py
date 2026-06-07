@@ -32,8 +32,10 @@ Accel_Measurement = collections.namedtuple(
 
 # Helper class to obtain measurements
 class AccelQueryHelper:
-    def __init__(self, printer):
+    def __init__(self, printer, batch_cb=None, store_samples=True):
         self.printer = printer
+        self.batch_cb = batch_cb
+        self.store_samples = store_samples
         self.is_finished = False
         print_time = printer.lookup_object('toolhead').get_last_move_time()
         self.request_start_time = self.request_end_time = print_time
@@ -47,6 +49,13 @@ class AccelQueryHelper:
     def handle_batch(self, msg):
         if self.is_finished:
             return False
+        if self.batch_cb is not None:
+            try:
+                self.batch_cb(msg)
+            except Exception:
+                logging.exception("Error in accelerometer batch callback")
+        if not self.store_samples:
+            return True
         if len(self.msgs) >= 10000:
             # Avoid filling up memory with too many samples
             return False
@@ -248,8 +257,8 @@ class ADXL345:
                     "This is generally indicative of connection problems "
                     "(e.g. faulty wiring) or a faulty adxl345 chip." % (
                         reg, val, stored_val))
-    def start_internal_client(self):
-        aqh = AccelQueryHelper(self.printer)
+    def start_internal_client(self, batch_cb=None, store_samples=True):
+        aqh = AccelQueryHelper(self.printer, batch_cb, store_samples)
         self.batch_bulk.add_client(aqh.handle_batch)
         return aqh
     # Measurement decoding

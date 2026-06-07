@@ -114,8 +114,8 @@ class BMI160:
                         "got 0x%x. This is generally indicative of connection "
                         "problems (e.g. faulty wiring) or a faulty bmi160 "
                         "chip." % (reg, val, stored_val))
-    def start_internal_client(self):
-        aqh = adxl345.AccelQueryHelper(self.printer)
+    def start_internal_client(self, batch_cb=None, store_samples=True):
+        aqh = adxl345.AccelQueryHelper(self.printer, batch_cb, store_samples)
         self.batch_bulk.add_client(aqh.handle_batch)
         return aqh
     def _convert_samples(self, samples):

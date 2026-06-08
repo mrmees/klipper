@@ -345,6 +345,29 @@ and might later produce asynchronous messages such as:
 The "header" field in the initial query response is used to describe
 the fields found in later "data" responses.
 
+### resonance_tester/run_test
+
+This endpoint runs resonance test motion without collecting, processing,
+or writing accelerometer samples. API clients should subscribe to the relevant
+accelerometer dump endpoint before making this request, and then use the
+returned capture windows to select the samples for each test.
+
+A request may look like:
+`{"id": 123, "method":"resonance_tester/run_test",
+"params":{"axis":"x"}}`
+and might return:
+`{"id":123,"result":{"capture_windows":[{"axis":"x",
+"axis_direction":[1.0,0.0,0.0],"point":[100.0,100.0,20.0],
+"chip_axis":"xy","sensor":"adxl345",
+"api_method":"adxl345/dump_adxl345",
+"api_params":{"sensor":"adxl345"},"start_time":3292.42,
+"end_time":3421.70,"max_freq":202.5}]}}`
+
+The `axis` parameter is required and accepts the same values as the
+`TEST_RESONANCES AXIS` parameter. Optional parameters include `chips`,
+`point`, `freq_start`, `freq_end`, `accel_per_hz`, `hz_per_sec`,
+`sweeping_accel`, `sweeping_period`, and `input_shaping`.
+
 ### angle/dump_angle
 
 This endpoint is used to subscribe to

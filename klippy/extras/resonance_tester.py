@@ -6,6 +6,14 @@
 import itertools, logging, math, os, time
 from . import shaper_calibrate
 
+ACCELEROMETER_DUMP_ENDPOINTS = {
+        'adxl345': 'adxl345/dump_adxl345',
+        'bmi160': 'bmi160/dump_bmi160',
+        'icm20948': 'icm20948/dump_icm20948',
+        'lis2dw': 'lis2dw/dump_lis2dw',
+        'mpu9250': 'mpu9250/dump_mpu9250',
+}
+
 class TestAxis:
     def __init__(self, axis=None, vib_dir=None):
         if axis is None:
@@ -53,6 +61,77 @@ def _parse_axis(gcmd, raw_axis):
         raise gcmd.error(
                 "Unable to parse axis direction '%s'" % (raw_axis,))
     return TestAxis(vib_dir=(dir_x, dir_y, dir_z))
+
+class WebRequestGCodeAdapter:
+    def __init__(self, web_request):
+        self.web_request = web_request
+        self.responses = []
+    def _lookup(self, name, default):
+        params = self.web_request.params
+        for key in (name, name.lower(), name.upper()):
+            if key in params:
+                return params[key]
+        return default
+    def get(self, name, default=None, **kwargs):
+        return self._lookup(name, default)
+    def _check_float(self, name, value, minval=None, maxval=None, above=None,
+                     below=None):
+        if minval is not None and value < minval:
+            raise self.error("Invalid %s parameter" % (name,))
+        if maxval is not None and value > maxval:
+            raise self.error("Invalid %s parameter" % (name,))
+        if above is not None and value <= above:
+            raise self.error("Invalid %s parameter" % (name,))
+        if below is not None and value >= below:
+            raise self.error("Invalid %s parameter" % (name,))
+    def get_float(self, name, default=None, minval=None, maxval=None,
+                  above=None, below=None, **kwargs):
+        value = self._lookup(name, default)
+        if value is None:
+            return value
+        try:
+            value = float(value)
+        except:
+            raise self.error("Unable to parse %s parameter" % (name,))
+        self._check_float(name, value, minval, maxval, above, below)
+        return value
+    def get_int(self, name, default=None, **kwargs):
+        value = self._lookup(name, default)
+        if value is None:
+            return value
+        try:
+            return int(value)
+        except:
+            raise self.error("Unable to parse %s parameter" % (name,))
+    def respond_info(self, msg, log=True):
+        self.responses.append(msg)
+    def error(self, msg):
+        return self.web_request.error(msg)
+
+def _parse_point(gcmd, raw_point):
+    if raw_point is None:
+        return None
+    if type(raw_point) in (list, tuple):
+        if len(raw_point) != 3:
+            raise gcmd.error("Invalid POINT parameter, must be 'x,y,z'")
+        try:
+            return [float(p) for p in raw_point]
+        except (TypeError, ValueError):
+            raise gcmd.error("Invalid POINT parameter, must contain numbers")
+    test_coords = raw_point.split(',')
+    if len(test_coords) != 3:
+        raise gcmd.error("Invalid POINT parameter, must be 'x,y,z'")
+    try:
+        return [float(p.strip()) for p in test_coords]
+    except ValueError:
+        raise gcmd.error("Invalid POINT parameter, must be 'x,y,z'"
+                         " where x, y and z are valid floating point numbers")
+
+def _get_accel_dump_endpoint(chip):
+    endpoint = getattr(chip, 'api_dump_endpoint', None)
+    if endpoint is not None:
+        return endpoint
+    return ACCELEROMETER_DUMP_ENDPOINTS.get(chip.__class__.__name__.lower())
 
 class VibrationPulseTestGenerator:
     def __init__(self, config):
@@ -294,6 +373,9 @@ class ResonanceTester:
         self.gcode.register_command("SHAPER_CALIBRATE",
                                     self.cmd_SHAPER_CALIBRATE,
                                     desc=self.cmd_SHAPER_CALIBRATE_help)
+        webhooks = self.printer.lookup_object('webhooks')
+        webhooks.register_endpoint("resonance_tester/run_test",
+                                   self._handle_run_test)
         self.printer.register_event_handler("klippy:connect", self.connect)
 
     def connect(self):
@@ -306,6 +388,12 @@ class ResonanceTester:
                 raise self.printer.config_error(
                         "'%s' is not an accelerometer" % chip_name)
             self.accel_chips.append((chip_axis, chip))
+
+    def _get_matching_accel_chips(self, axis, accel_chips=None):
+        if accel_chips is None:
+            return [(chip_axis, chip) for chip_axis, chip in self.accel_chips
+                    if axis.matches(chip_axis)]
+        return [(axis.get_name(), chip) for chip in accel_chips]
 
     def _run_test(self, gcmd, axes, helper, name_suffix, raw_name_suffix=None,
                   accel_chips=None, test_point=None):
@@ -331,15 +419,10 @@ class ResonanceTester:
                     gcmd.respond_info("Testing axis %s" % axis.get_name())
 
                 raw_values = []
-                if accel_chips is None:
-                    for chip_axis, chip in self.accel_chips:
-                        if axis.matches(chip_axis):
-                            aclient = chip.start_internal_client()
-                            raw_values.append((chip_axis, aclient, chip.name))
-                else:
-                    for chip in accel_chips:
-                        aclient = chip.start_internal_client()
-                        raw_values.append((axis, aclient, chip.name))
+                for chip_axis, chip in self._get_matching_accel_chips(
+                        axis, accel_chips):
+                    aclient = chip.start_internal_client()
+                    raw_values.append((chip_axis, aclient, chip.name))
                 if not raw_values:
                     raise gcmd.error(
                             "No accelerometers specified that can measure"
@@ -378,9 +461,84 @@ class ResonanceTester:
                     else:
                         calibration_data[axis].add_data(new_data)
         return calibration_data
+    def _run_api_test(self, gcmd, axes, accel_chips=None, test_point=None):
+        toolhead = self.printer.lookup_object('toolhead')
+        capture_windows = []
+
+        has_z = [axis.get_dir()[2] for axis in axes]
+        if all(has_z) != any(has_z):
+            raise gcmd.error("Cannot test Z axis together with other axes")
+        self.generator.prepare_test(gcmd, is_z=all(has_z))
+        max_freq = self._get_max_calibration_freq()
+
+        test_points = [test_point] if test_point else self.probe_points
+        for point in test_points:
+            toolhead.manual_move(point, self.move_speed)
+            if len(test_points) > 1 or test_point is not None:
+                gcmd.respond_info(
+                        "Probing point (%.3f, %.3f, %.3f)" % tuple(point))
+            for axis in axes:
+                toolhead.wait_moves()
+                toolhead.dwell(0.500)
+                if len(axes) > 1:
+                    gcmd.respond_info("Testing axis %s" % axis.get_name())
+
+                matched_chips = self._get_matching_accel_chips(
+                        axis, accel_chips)
+                if not matched_chips:
+                    raise gcmd.error(
+                            "No accelerometers specified that can measure"
+                            " resonances over axis '%s'" % axis.get_name())
+
+                test_seq = self.generator.gen_test()
+                start_time = toolhead.get_last_move_time()
+                self.executor.run_test(test_seq, axis, gcmd)
+                end_time = toolhead.get_last_move_time()
+                toolhead.wait_moves()
+
+                for chip_axis, chip in matched_chips:
+                    api_method = _get_accel_dump_endpoint(chip)
+                    if api_method is None:
+                        raise gcmd.error(
+                                "No API dump endpoint known for accelerometer"
+                                " '%s'" % (chip.name,))
+                    capture_windows.append({
+                            'axis': axis.get_name(),
+                            'axis_direction': list(axis.get_dir()),
+                            'point': list(point),
+                            'chip_axis': chip_axis,
+                            'sensor': chip.name,
+                            'api_method': api_method,
+                            'api_params': {'sensor': chip.name},
+                            'start_time': start_time,
+                            'end_time': end_time,
+                            'max_freq': max_freq,
+                    })
+        return capture_windows
+    def _handle_run_test(self, web_request):
+        gcmd = WebRequestGCodeAdapter(web_request)
+        raw_axis = gcmd.get("AXIS")
+        if raw_axis is None:
+            raise gcmd.error("Missing AXIS parameter")
+        axis = _parse_axis(gcmd, raw_axis)
+        chips_str = gcmd.get("CHIPS", None)
+        test_point = _parse_point(gcmd, gcmd.get("POINT", None))
+        accel_chips = self._parse_chips(chips_str) if chips_str else None
+        with self.gcode.get_mutex():
+            capture_windows = self._run_api_test(
+                    gcmd, [axis], accel_chips=accel_chips,
+                    test_point=test_point)
+        result = {'capture_windows': capture_windows}
+        if gcmd.responses:
+            result['messages'] = gcmd.responses
+        web_request.send(result)
     def _parse_chips(self, accel_chips):
         parsed_chips = []
-        for chip_name in accel_chips.split(','):
+        if type(accel_chips) in (list, tuple):
+            chip_names = accel_chips
+        else:
+            chip_names = accel_chips.split(',')
+        for chip_name in chip_names:
             chip = self.printer.lookup_object(chip_name.strip(), None)
             if chip is None:
                 raise self.printer.command_error("Name '%s' is not valid for"

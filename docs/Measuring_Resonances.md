@@ -478,6 +478,17 @@ This script will generate the charts `/tmp/shaper_calibrate_x.png` and
 suggested frequencies for each input shaper, as well as which input shaper is
 recommended for your setup. For example:
 
+Alternatively, if Klipper is running with the [API server](API_Server.md)
+enabled, the script can run the resonance test and process the captured
+accelerometer samples without creating intermediate raw CSV files in Klipper:
+```
+~/klipper/scripts/calibrate_shaper.py --api /tmp/klippy_uds --axis x -o /tmp/shaper_calibrate_x.png
+~/klipper/scripts/calibrate_shaper.py --api /tmp/klippy_uds --axis y -o /tmp/shaper_calibrate_y.png
+```
+In this mode, the script subscribes to Klipper's accelerometer dump endpoint,
+runs the resonance test through the API server, keeps samples in the script
+process, and writes only the requested output graph or CSV file.
+
 ![Resonances](img/calibrate-y.png)
 ```
 Fitted shaper 'zv' frequency = 34.4 Hz (vibrations = 4.0%, smoothing ~= 0.132)
